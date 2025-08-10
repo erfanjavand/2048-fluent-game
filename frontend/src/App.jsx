@@ -13,7 +13,7 @@ const CELL_COUNT = GRID_SIZE * GRID_SIZE;
 // Dynamic backend URL detection
 const getBackendUrl = () => {
   if (import.meta.env.VITE_BACKEND_URL) {
-    return import.meta.env.VITE_BACKEND_URL|| 'http://localhost:3001';
+    return import.meta.env.VITE_BACKEND_URL;
   }
   
   const hostname = window.location.hostname;
