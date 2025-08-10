@@ -39,7 +39,7 @@ const getBackendUrl = () => {
 };
 
 // Contract configuration
-const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "0x038e14484935d89d65c0ada408311fe2fbbb8a5f";
+const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "0x51041c822b72899aaa3a6baa9a07f92a33efa1fe";
 const CONTRACT_ABI = [
   "function submitScore(uint256 _score, string memory _playerName) public",
   "function getTopPlayers(uint256 _count) public view returns (tuple(address player, string playerName, uint256 highScore, uint256 gamesPlayed, uint256 totalScore)[])",
@@ -685,7 +685,7 @@ function App() {
               {/* Instructions */}
               <div className="mt-6 text-center text-sm opacity-80">
                 <p>Use arrow keys or swipe to play</p>
-                <p className="mt-1">Join tiles to reach 2048!by </p><a href="https://x.com/0xerfa">@0xerfa</a>
+                <p className="mt-1">Join tiles to reach 2048!</p>
                 {!isCorrectNetwork && account && (
                   <p className="mt-2 text-yellow-400">
                     Please switch to Fluent network to submit scores
