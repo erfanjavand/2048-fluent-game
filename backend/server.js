@@ -1,129 +1,179 @@
 // backend/server.js
 const express = require('express');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
 const cors = require('cors');
 const { ethers } = require('ethers');
-const dotenv = require('dotenv');
-
-dotenv.config();
+require('dotenv').config();
 
 const app = express();
-app.use(cors());
+const httpServer = createServer(app);
+
+// CORS configuration for GitHub Codespaces
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // List of allowed origins
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:5174',
+      process.env.FRONTEND_URL,
+      // GitHub Codespaces patterns
+      /https:\/\/.*\.app\.github\.dev$/,
+      /https:\/\/.*\.github\.dev$/,
+      // Other cloud IDE patterns
+      /https:\/\/.*\.gitpod\.io$/,
+      /https:\/\/.*\.csb\.app$/
+    ];
+    
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (allowed instanceof RegExp) {
+        return allowed.test(origin);
+      }
+      return allowed === origin;
+    });
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.log('Blocked by CORS:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
 app.use(express.json());
 
+// Socket.io with CORS
+const io = new Server(httpServer, {
+  cors: corsOptions,
+  transports: ['websocket', 'polling']
+});
+
+// Contract setup
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const CONTRACT_ABI = [
+  "function submitScore(uint256 _score, string memory _playerName) public",
   "function getTopPlayers(uint256 _count) public view returns (tuple(address player, string playerName, uint256 highScore, uint256 gamesPlayed, uint256 totalScore)[])",
-  "function getRecentScores(uint256 _count) public view returns (tuple(address player, uint256 score, uint256 timestamp, string playerName)[])",
-  "function getTotalGamesPlayed() public view returns (uint256)",
-  "event NewHighScore(address indexed player, string playerName, uint256 score, uint256 timestamp)",
-  "event GamePlayed(address indexed player, uint256 score, uint256 timestamp)"
+  "function getPlayerStats(address _player) public view returns (uint256 highScore, uint256 gamesPlayed, uint256 totalScore, string memory playerName)",
+  "event ScoreSubmitted(address indexed player, uint256 score, string playerName)"
 ];
 
-// Initialize provider
-const provider = new ethers.JsonRpcProvider(process.env.RPC_URL || 'https://rpc.testnet.fluent.xyz/');
+// Provider and contract instance
+const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
 const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
 
-// Cache for leaderboard
-let leaderboardCache = null;
-let cacheTimestamp = 0;
-const CACHE_DURATION = 60000; // 1 minute
+// In-memory cache for leaderboard
+let leaderboardCache = [];
+let lastCacheUpdate = 0;
+const CACHE_DURATION = 30000; // 30 seconds
 
-// API Routes
-app.get('/api/leaderboard', async (req, res) => {
+// Function to fetch leaderboard from blockchain
+async function fetchLeaderboard() {
   try {
-    const now = Date.now();
-    if (!leaderboardCache || now - cacheTimestamp > CACHE_DURATION) {
-      const topPlayers = await contract.getTopPlayers(20);
-      leaderboardCache = topPlayers.map(player => ({
-        address: player.player,
-        name: player.playerName,
-        highScore: player.highScore.toString(),
-        gamesPlayed: player.gamesPlayed.toString(),
-        avgScore: player.gamesPlayed > 0 ? 
-          (player.totalScore / player.gamesPlayed).toFixed(0) : '0'
-      }));
-      cacheTimestamp = now;
-    }
-    res.json(leaderboardCache);
+    console.log('Fetching leaderboard from blockchain...');
+    const topPlayers = await contract.getTopPlayers(10);
+    
+    leaderboardCache = topPlayers.map(player => ({
+      address: player.player,
+      name: player.playerName || 'Anonymous',
+      highScore: Number(player.highScore),
+      gamesPlayed: Number(player.gamesPlayed),
+      totalScore: Number(player.totalScore)
+    })).sort((a, b) => b.highScore - a.highScore);
+    
+    lastCacheUpdate = Date.now();
+    console.log('Leaderboard updated:', leaderboardCache.length, 'players');
+    return leaderboardCache;
   } catch (error) {
     console.error('Error fetching leaderboard:', error);
+    return leaderboardCache; // Return cached data on error
+  }
+}
+
+// API Routes
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    contract: CONTRACT_ADDRESS,
+    network: process.env.RPC_URL
+  });
+});
+
+app.get('/api/leaderboard', async (req, res) => {
+  try {
+    // Check if cache is still valid
+    if (Date.now() - lastCacheUpdate > CACHE_DURATION || leaderboardCache.length === 0) {
+      await fetchLeaderboard();
+    }
+    
+    res.json(leaderboardCache);
+  } catch (error) {
+    console.error('Error in /api/leaderboard:', error);
     res.status(500).json({ error: 'Failed to fetch leaderboard' });
   }
 });
 
-app.get('/api/recent-games', async (req, res) => {
-  try {
-    const recentScores = await contract.getRecentScores(10);
-    const formatted = recentScores.map(score => ({
-      player: score.player,
-      playerName: score.playerName,
-      score: score.score.toString(),
-      timestamp: new Date(Number(score.timestamp) * 1000).toISOString()
-    }));
-    res.json(formatted);
-  } catch (error) {
-    console.error('Error fetching recent games:', error);
-    res.status(500).json({ error: 'Failed to fetch recent games' });
-  }
-});
-
-app.get('/api/stats', async (req, res) => {
-  try {
-    const totalGames = await contract.getTotalGamesPlayed();
-    res.json({
-      totalGames: totalGames.toString()
-    });
-  } catch (error) {
-    console.error('Error fetching stats:', error);
-    res.status(500).json({ error: 'Failed to fetch stats' });
-  }
-});
-
-// WebSocket for real-time updates
-const server = require('http').createServer(app);
-const io = require('socket.io')(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
-
-// Listen to blockchain events
-contract.on('NewHighScore', async (player, playerName, score, timestamp) => {
-  console.log('New high score:', playerName, score.toString());
+// Socket.io connection handling
+io.on('connection', (socket) => {
+  console.log('New client connected:', socket.id);
   
-  // Update cache
-  const topPlayers = await contract.getTopPlayers(20);
-  leaderboardCache = topPlayers.map(player => ({
-    address: player.player,
-    name: player.playerName,
-    highScore: player.highScore.toString(),
-    gamesPlayed: player.gamesPlayed.toString(),
-    avgScore: player.gamesPlayed > 0 ? 
-      (player.totalScore / player.gamesPlayed).toFixed(0) : '0'
-  }));
-  cacheTimestamp = Date.now();
+  // Send current leaderboard to new client
+  socket.emit('leaderboardUpdate', leaderboardCache);
   
-  // Emit to all connected clients
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
+  });
+});
+
+// Listen for blockchain events
+contract.on('ScoreSubmitted', async (player, score, playerName) => {
+  console.log('New score submitted:', player, score, playerName);
+  
+  // Update leaderboard
+  const updatedLeaderboard = await fetchLeaderboard();
+  
+  // Broadcast to all connected clients
+  io.emit('leaderboardUpdate', updatedLeaderboard);
+  
+  // Notify about new high score
   io.emit('newHighScore', {
     player,
-    playerName,
-    score: score.toString(),
-    timestamp: new Date(Number(timestamp) * 1000).toISOString()
-  });
-  
-  io.emit('leaderboardUpdate', leaderboardCache);
-});
-
-contract.on('GamePlayed', (player, score, timestamp) => {
-  io.emit('newGame', {
-    player,
-    score: score.toString(),
-    timestamp: new Date(Number(timestamp) * 1000).toISOString()
+    score: Number(score),
+    playerName
   });
 });
 
+// Initial leaderboard fetch
+fetchLeaderboard().then(() => {
+  console.log('Initial leaderboard loaded');
+});
+
+// Periodic leaderboard refresh
+setInterval(async () => {
+  const updated = await fetchLeaderboard();
+  if (updated.length > 0) {
+    io.emit('leaderboardUpdate', updated);
+  }
+}, 60000); // Refresh every minute
+
+// Start server
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const HOST = '0.0.0.0'; // Important for cloud environments
+
+httpServer.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
+  console.log('Contract Address:', CONTRACT_ADDRESS);
+  console.log('RPC URL:', process.env.RPC_URL);
+  console.log('Frontend URL:', process.env.FRONTEND_URL);
 });
