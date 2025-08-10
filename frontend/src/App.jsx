@@ -685,7 +685,7 @@ function App() {
               {/* Instructions */}
               <div className="mt-6 text-center text-sm opacity-80">
                 <p>Use arrow keys or swipe to play</p>
-                <p className="mt-1">Join tiles to reach 2048!</p>
+                <p className="mt-1">Join tiles to reach 2048!by </p><a href="https://x.com/0xerfa">@0xerfa</a>
                 {!isCorrectNetwork && account && (
                   <p className="mt-2 text-yellow-400">
                     Please switch to Fluent network to submit scores
